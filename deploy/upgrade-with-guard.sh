@@ -84,14 +84,15 @@ if [ "$BUILD_TAGS" != "none" ]; then
 fi
 
 BUILD_OUT=/tmp/sub2api.new
-GOOS_FLAG=""
+REMOTE_GOOS=""
+REMOTE_GOARCH=""
 if [ -n "$DEPLOY_HOST" ]; then
   SSH_CMD="ssh -i $DEPLOY_SSH_KEY -p $DEPLOY_SSH_PORT -o ConnectTimeout=10 $DEPLOY_HOST"
   SCP_CMD="scp -i $DEPLOY_SSH_KEY -P $DEPLOY_SSH_PORT -o ConnectTimeout=10"
   REMOTE_ARCH="$($SSH_CMD uname -m)"
   case "$REMOTE_ARCH" in
-    x86_64|amd64) GOOS_FLAG="GOOS=linux GOARCH=amd64" ; BUILD_OUT=/tmp/sub2api-linux-amd64.new ;;
-    aarch64|arm64) GOOS_FLAG="GOOS=linux GOARCH=arm64" ; BUILD_OUT=/tmp/sub2api-linux-arm64.new ;;
+    x86_64|amd64) REMOTE_GOOS=linux ; REMOTE_GOARCH=amd64 ; BUILD_OUT=/tmp/sub2api-linux-amd64.new ;;
+    aarch64|arm64) REMOTE_GOOS=linux ; REMOTE_GOARCH=arm64 ; BUILD_OUT=/tmp/sub2api-linux-arm64.new ;;
     *) echo "不支持的远端架构: $REMOTE_ARCH" >&2; exit 1 ;;
   esac
   echo "==> 远端架构: $REMOTE_ARCH"
@@ -112,7 +113,11 @@ fi
 STAMP="${NEW_VER}-${VERSION_SUFFIX}.${SUFFIX_CNT}"
 
 echo "==> 构建 $STAMP (tags: ${TAG_FLAG:-none})"
-CGO_ENABLED=0 $GOOS_FLAG "$GO" build $TAG_FLAG -trimpath \
+BUILD_ENV="CGO_ENABLED=0"
+if [ -n "$REMOTE_GOOS" ]; then
+  BUILD_ENV="$BUILD_ENV GOOS=$REMOTE_GOOS GOARCH=$REMOTE_GOARCH"
+fi
+env $BUILD_ENV "$GO" build $TAG_FLAG -trimpath \
   -ldflags "-s -w -X main.Version=$STAMP -X main.Commit=$(git rev-parse --short HEAD)" \
   -o "$BUILD_OUT" ./cmd/server
 
