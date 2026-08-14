@@ -7,6 +7,7 @@ import (
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/google/wire"
@@ -211,8 +212,12 @@ func ProvideSQLDB(client *ent.Client) (*sql.DB, error) {
 	if !ok {
 		return nil, errors.New("ent driver does not expose *sql.DB")
 	}
+	db := drv.DB()
+	// 装配计费护栏审计日志记录器（billing_guard_logs）：
+	// 每次拦截/观察事件异步写入审计表；写入失败仅告警，不影响计费主流程。
+	billingguard.SetRecorder(service.NewBillingGuardLogRecorder(db))
 	// 返回驱动持有的 sql.DB 实例
-	return drv.DB(), nil
+	return db, nil
 }
 
 // ProvideRedis 为依赖注入提供 Redis 客户端。

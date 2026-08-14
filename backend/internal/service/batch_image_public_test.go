@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
@@ -967,3 +968,33 @@ func (r *publicBatchImageUserGroupRateRepo) GetByUserAndGroup(_ context.Context,
 
 var _ BatchImageGroupPricingRepository = (*publicBatchImageGroupRepo)(nil)
 var _ BatchImageUserGroupRateRepository = (*publicBatchImageUserGroupRateRepo)(nil)
+
+func TestBatchImagePublicService_Submit_BillingGuardBlocksAbnormalMultiplier(t *testing.T) {
+	billingguard.Configure(billingguard.Config{
+		Enabled:                  true,
+		MaxRateMultiplier:        100,
+		MaxAccountRateMultiplier: 100,
+	})
+	t.Cleanup(func() { billingguard.Configure(billingguard.DefaultConfig()) })
+
+	svc, repo, _, _, _ := newTestBatchImagePublicService(true)
+	groupID := int64(7)
+	svc.GroupRepo = &publicBatchImageGroupRepo{groups: map[int64]*Group{
+		groupID: {
+			ID:                        groupID,
+			Platform:                  PlatformGemini,
+			AllowBatchImageGeneration: true,
+			RateMultiplier:            1000,
+		},
+	}}
+	owner := testBatchImageOwner()
+	owner.GroupID = &groupID
+
+	_, err := svc.Submit(context.Background(), owner, validBatchImageSubmitRequest(), "")
+	require.Error(t, err)
+	require.ErrorIs(t, err, billingguard.ErrBlocked)
+	// 拦截语义：不创建批量任务、不冻结余额。
+	require.Empty(t, repo.jobs)
+	billing := svc.BillingRepo.(*fakeBatchImageBillingRepo)
+	require.Empty(t, billing.reserves)
+}

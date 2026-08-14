@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
@@ -2892,4 +2893,76 @@ func TestGatewayServiceCalculateRecordUsageCost_ChannelImageBillingNormalizesMis
 	require.Equal(t, string(BillingModeImage), cost.BillingMode)
 	require.InDelta(t, 0.44, cost.TotalCost, 1e-12)
 	require.InDelta(t, 0.44, cost.ActualCost, 1e-12)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_BillingGuardBlocksAbnormalMultiplier(t *testing.T) {
+	billingguard.Configure(billingguard.Config{
+		Enabled:                  true,
+		MaxRateMultiplier:        100,
+		MaxAccountRateMultiplier: 100,
+	})
+	t.Cleanup(func() { billingguard.Configure(billingguard.DefaultConfig()) })
+
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	quotaSvc := &openAIRecordUsageAPIKeyQuotaStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo, nil)
+
+	groupID := int64(11)
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "billing_guard_blocked",
+			Usage:     OpenAIUsage{InputTokens: 10, OutputTokens: 6},
+			Model:     "gpt-5.1",
+			Duration:  time.Second,
+		},
+		APIKey:        &APIKey{ID: 1000, Quota: 100, GroupID: &groupID, Group: &Group{ID: groupID, RateMultiplier: 1000}},
+		User:          &User{ID: 2000},
+		Account:       &Account{ID: 3000, Type: AccountTypeAPIKey},
+		APIKeyService: quotaSvc,
+	})
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, billingguard.ErrBlocked)
+	// 拦截语义：不写 usage_log、不执行任何扣费。
+	require.Zero(t, usageRepo.calls)
+	require.Zero(t, billingRepo.calls)
+	require.Zero(t, userRepo.deductCalls)
+	require.Zero(t, quotaSvc.quotaCalls)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_BillingGuardAllowsNormalMultiplier(t *testing.T) {
+	billingguard.Configure(billingguard.Config{
+		Enabled:                  true,
+		MaxRateMultiplier:        100,
+		MaxAccountRateMultiplier: 100,
+	})
+	t.Cleanup(func() { billingguard.Configure(billingguard.DefaultConfig()) })
+
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	quotaSvc := &openAIRecordUsageAPIKeyQuotaStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo, nil)
+
+	groupID := int64(12)
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "billing_guard_allowed",
+			Usage:     OpenAIUsage{InputTokens: 10, OutputTokens: 6},
+			Model:     "gpt-5.1",
+			Duration:  time.Second,
+		},
+		APIKey:        &APIKey{ID: 1001, Quota: 100, GroupID: &groupID, Group: &Group{ID: groupID, RateMultiplier: 5}},
+		User:          &User{ID: 2001},
+		Account:       &Account{ID: 3001, Type: AccountTypeAPIKey},
+		APIKeyService: quotaSvc,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, usageRepo.calls)
+	require.Equal(t, 1, billingRepo.calls)
 }

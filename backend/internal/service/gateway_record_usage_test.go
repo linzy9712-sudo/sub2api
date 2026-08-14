@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
@@ -693,4 +694,131 @@ func TestGatewayServiceRecordUsage_ReasoningEffortNil(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, usageRepo.lastLog)
 	require.Nil(t, usageRepo.lastLog.ReasoningEffort)
+}
+
+func TestGatewayServiceRecordUsage_BillingGuardBlocksAbnormalMultiplier(t *testing.T) {
+	billingguard.Configure(billingguard.Config{
+		Enabled:                  true,
+		MaxRateMultiplier:        100,
+		MaxAccountRateMultiplier: 100,
+	})
+	t.Cleanup(func() { billingguard.Configure(billingguard.DefaultConfig()) })
+
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+
+	groupID := int64(901)
+	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+		Result: &ForwardResult{
+			RequestID: "billing_guard_blocked",
+			Usage:     ClaudeUsage{InputTokens: 10, OutputTokens: 6},
+			Model:     "claude-sonnet-4",
+			Duration:  time.Second,
+		},
+		APIKey:  &APIKey{ID: 501, Quota: 100, GroupID: &groupID, Group: &Group{ID: groupID, RateMultiplier: 1000}},
+		User:    &User{ID: 601},
+		Account: &Account{ID: 701},
+	})
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, billingguard.ErrBlocked)
+	// 拦截语义：不写 usage_log、不执行任何扣费。
+	require.Zero(t, usageRepo.calls)
+	require.Zero(t, billingRepo.calls)
+}
+
+type gatewayGuardRecorderStub struct {
+	ch chan gatewayGuardRecorderCall
+}
+
+type gatewayGuardRecorderCall struct {
+	action string
+	reason string
+	ev     billingguard.Event
+}
+
+func (s *gatewayGuardRecorderStub) RecordEvent(_ context.Context, ev billingguard.Event, action, reason string) {
+	if s.ch != nil {
+		s.ch <- gatewayGuardRecorderCall{action: action, reason: reason, ev: ev}
+	}
+}
+
+func TestGatewayServiceRecordUsage_BillingGuardBlockWritesAuditEvent(t *testing.T) {
+	billingguard.Configure(billingguard.Config{
+		Enabled:                  true,
+		MaxRateMultiplier:        100,
+		MaxAccountRateMultiplier: 100,
+	})
+	rec := &gatewayGuardRecorderStub{ch: make(chan gatewayGuardRecorderCall, 1)}
+	billingguard.SetRecorder(rec)
+	t.Cleanup(func() {
+		billingguard.SetRecorder(nil)
+		billingguard.Configure(billingguard.DefaultConfig())
+	})
+
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+
+	groupID := int64(903)
+	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+		Result: &ForwardResult{
+			RequestID: "billing_guard_audit",
+			Usage:     ClaudeUsage{InputTokens: 10, OutputTokens: 6},
+			Model:     "claude-sonnet-4",
+			Duration:  time.Second,
+		},
+		APIKey:  &APIKey{ID: 503, Quota: 100, GroupID: &groupID, Group: &Group{ID: groupID, RateMultiplier: 1000}},
+		User:    &User{ID: 603},
+		Account: &Account{ID: 703},
+	})
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, billingguard.ErrBlocked)
+	// 拦截语义不变：不写 usage_log、不扣费。
+	require.Zero(t, usageRepo.calls)
+	require.Zero(t, billingRepo.calls)
+
+	// 审计日志：拦截事件应回调记录器（生产装配为 billing_guard_logs 表写入）。
+	select {
+	case call := <-rec.ch:
+		require.Equal(t, "blocked", call.action)
+		require.Equal(t, "gateway", call.ev.Path)
+		require.Equal(t, int64(603), call.ev.UserID)
+		require.Equal(t, 1000.0, call.ev.RateMultiplier)
+		require.Contains(t, call.reason, "rate_multiplier 1000.00")
+	case <-time.After(5 * time.Second):
+		t.Fatal("audit recorder was not called")
+	}
+}
+
+func TestGatewayServiceRecordUsage_BillingGuardAllowsNormalMultiplier(t *testing.T) {
+	billingguard.Configure(billingguard.Config{
+		Enabled:                  true,
+		MaxRateMultiplier:        100,
+		MaxAccountRateMultiplier: 100,
+	})
+	t.Cleanup(func() { billingguard.Configure(billingguard.DefaultConfig()) })
+
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+
+	groupID := int64(902)
+	err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+		Result: &ForwardResult{
+			RequestID: "billing_guard_allowed",
+			Usage:     ClaudeUsage{InputTokens: 10, OutputTokens: 6},
+			Model:     "claude-sonnet-4",
+			Duration:  time.Second,
+		},
+		APIKey:  &APIKey{ID: 502, Quota: 100, GroupID: &groupID, Group: &Group{ID: groupID, RateMultiplier: 5}},
+		User:    &User{ID: 602},
+		Account: &Account{ID: 702},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, usageRepo.calls)
+	require.Equal(t, 1, billingRepo.calls)
 }

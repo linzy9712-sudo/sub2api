@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -870,6 +871,28 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 
 	// 创建使用日志
 	accountRateMultiplier := account.BillingRateMultiplier()
+
+	// 外挂计费护栏（billingguard 组件）：倍率异常（如 >1000x）时拦截本次计费，
+	// 不写 usage_log、不执行任何扣费，仅发告警。组件关闭/观察模式时透明放行。
+	totalCost, actualCost := 0.0, 0.0
+	if cost != nil {
+		totalCost, actualCost = cost.TotalCost, cost.ActualCost
+	}
+	if guardErr := billingguard.CheckAndBlock(billingguard.Event{
+		Path:                  "gateway",
+		RequestID:             result.RequestID,
+		Model:                 result.Model,
+		UserID:                user.ID,
+		APIKeyID:              apiKey.ID,
+		AccountID:             account.ID,
+		RateMultiplier:        multiplier,
+		AccountRateMultiplier: accountRateMultiplier,
+		TotalCost:             totalCost,
+		ActualCost:            actualCost,
+	}); guardErr != nil {
+		return guardErr
+	}
+
 	usageLog := s.buildRecordUsageLog(ctx, input, result, apiKey, user, account, subscription,
 		requestedModel, multiplier, imageMultiplier, accountRateMultiplier, billingType, cacheTTLOverridden, cost, opts)
 

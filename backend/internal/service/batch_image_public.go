@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -1074,6 +1075,27 @@ func (s *BatchImagePublicService) resolvePricingSnapshot(ctx context.Context, ow
 	standardUnitPrice := unit * groupMultiplier * accountMultiplier
 	billableUnitPrice := standardUnitPrice * discountMultiplier
 	holdUnitPrice := standardUnitPrice * holdMultiplier
+
+	// 外挂计费护栏（billingguard 组件）：倍率异常（如 >1000x）时拒绝创建批量任务，
+	// 避免以异常倍率冻结余额（hold）并向 batch_image_jobs / usage_logs 写入记录。
+	accountID := int64(0)
+	if account != nil {
+		accountID = account.ID
+	}
+	if guardErr := billingguard.CheckAndBlock(billingguard.Event{
+		Path:                  "batch_image",
+		Model:                 req.Model,
+		UserID:                owner.UserID,
+		APIKeyID:              owner.APIKeyID,
+		AccountID:             accountID,
+		RateMultiplier:        groupMultiplier,
+		AccountRateMultiplier: accountMultiplier,
+		TotalCost:             unit * float64(len(req.Items)),
+		ActualCost:            holdUnitPrice * float64(len(req.Items)),
+	}); guardErr != nil {
+		return nil, guardErr
+	}
+
 	return &BatchImagePricingSnapshot{
 		BaseUnitPrice:           unit,
 		GroupRateMultiplier:     groupMultiplier,

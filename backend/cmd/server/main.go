@@ -16,6 +16,7 @@ import (
 	"time"
 
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -139,6 +140,17 @@ func runMainServer() {
 	if err := logger.Init(logger.OptionsFromConfig(cfg.Log)); err != nil {
 		log.Fatalf("Failed to initialize logger: %v", err)
 	}
+
+	// 装配外挂计费护栏（billingguard）：倍率异常（如 >1000x）时拦截计费，
+	// 避免脏配置/篡改导致巨额扣费。环境变量见 internal/billingguard 包文档。
+	billingguard.Configure(billingguard.LoadFromEnv())
+	if gc := billingguard.Current(); gc.Enabled {
+		log.Printf("[BillingGuard] enabled: max_rate_multiplier=%.2f max_account_rate_multiplier=%.2f max_absolute_cost_usd=%.4f observe_only=%v",
+			gc.MaxRateMultiplier, gc.MaxAccountRateMultiplier, gc.MaxAbsoluteCostUSD, gc.ObserveOnly)
+	} else {
+		log.Printf("[BillingGuard] disabled")
+	}
+
 	if cfg.RunMode == config.RunModeSimple {
 		log.Println("⚠️  WARNING: Running in SIMPLE mode - billing and quota checks are DISABLED")
 	}
