@@ -874,6 +874,29 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 
 	// 外挂计费护栏（billingguard 组件）：倍率异常（如 >1000x）时拦截本次计费，
 	// 不写 usage_log、不执行任何扣费，仅发告警。组件关闭/观察模式时透明放行。
+	//
+	// 倍率来源拆解（诊断用）：拦截时把各层实际取值写进告警与审计表。
+	// 注意 apiKey.Group 来自鉴权缓存快照（L1 15s / L2 300s），用户专属倍率
+	// 另有 30s 进程内缓存——拆解值与 DB 不一致即说明缓存陈旧。
+	guardGroupID := int64(0)
+	guardGroupDefault := 0.0
+	guardUserResolved := 0.0
+	guardPeak := 1.0
+	if apiKey.GroupID != nil && apiKey.Group != nil {
+		guardGroupID = *apiKey.GroupID
+		guardGroupDefault = apiKey.Group.RateMultiplier
+		guardPeak = apiKey.Group.PeakMultiplierAt(pricingAt)
+		guardUserResolved = guardGroupDefault
+		if guardPeak > 0 {
+			guardUserResolved = multiplier / guardPeak
+		}
+	}
+	guardSystemDefault := 1.0
+	if s.cfg != nil {
+		guardSystemDefault = s.cfg.Default.RateMultiplier
+	}
+	guardBreakdown := buildBillingGuardBreakdown(guardSystemDefault, guardGroupDefault, guardUserResolved, guardPeak, imageMultiplier, 0, accountRateMultiplier)
+
 	totalCost, actualCost := 0.0, 0.0
 	if cost != nil {
 		totalCost, actualCost = cost.TotalCost, cost.ActualCost
@@ -885,6 +908,8 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,
 		AccountID:             account.ID,
+		GroupID:               guardGroupID,
+		Breakdown:             guardBreakdown,
 		RateMultiplier:        multiplier,
 		AccountRateMultiplier: accountRateMultiplier,
 		TotalCost:             totalCost,

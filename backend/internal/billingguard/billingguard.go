@@ -65,6 +65,12 @@ type Event struct {
 	UserID    int64
 	APIKeyID  int64
 	AccountID int64
+	GroupID   int64 // 关联分组（0 表示无）
+
+	// Breakdown 是倍率来源拆解（诊断用）：记录系统默认/分组默认/用户专属覆盖/
+	// 高峰因子/图片/视频独立倍率/账号倍率各层的取值，用于回答
+	// 「异常倍率到底来自哪一层」。仅写入日志与审计表，不参与判定。
+	Breakdown string
 
 	// RateMultiplier 是本次名义 token 倍率（已含高峰因子）。
 	RateMultiplier float64
@@ -303,6 +309,8 @@ func guardAttrs(ev Event, reason string) []any {
 		"user_id", ev.UserID,
 		"api_key_id", ev.APIKeyID,
 		"account_id", ev.AccountID,
+		"group_id", ev.GroupID,
+		"multiplier_breakdown", ev.Breakdown,
 		"rate_multiplier", ev.RateMultiplier,
 		"account_rate_multiplier", ev.AccountRateMultiplier,
 		"total_cost", ev.TotalCost,

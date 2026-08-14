@@ -288,6 +288,26 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 
 	// 外挂计费护栏（billingguard 组件）：倍率异常（如 >1000x）时拦截本次计费，
 	// 不写 usage_log、不执行任何扣费，仅发告警。组件关闭/观察模式时透明放行。
+	//
+	// 倍率来源拆解（诊断用）：拦截时把各层实际取值写进告警与审计表。
+	// apiKey.Group 来自鉴权缓存快照（L1 15s / L2 300s）——拆解值与 DB 不一致
+	// 即说明缓存陈旧（直接改库/恢复备份不会触发缓存失效）。
+	guardGroupID := int64(0)
+	guardGroupDefault := 0.0
+	guardUserResolved := 0.0
+	guardPeak := 1.0
+	if apiKey.GroupID != nil && apiKey.Group != nil {
+		guardGroupID = *apiKey.GroupID
+		guardGroupDefault = apiKey.Group.RateMultiplier
+		guardPeak = apiKey.Group.PeakMultiplierAt(openAIUsagePricingAt(input))
+		guardUserResolved = baseMultiplier
+	}
+	guardSystemDefault := 1.0
+	if s.cfg != nil {
+		guardSystemDefault = s.cfg.Default.RateMultiplier
+	}
+	guardBreakdown := buildBillingGuardBreakdown(guardSystemDefault, guardGroupDefault, guardUserResolved, guardPeak, imageMultiplier, videoMultiplier, accountRateMultiplier)
+
 	totalCost, actualCost := 0.0, 0.0
 	if cost != nil {
 		totalCost, actualCost = cost.TotalCost, cost.ActualCost
@@ -299,6 +319,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		UserID:                user.ID,
 		APIKeyID:              apiKey.ID,
 		AccountID:             account.ID,
+		GroupID:               guardGroupID,
+		Breakdown:             guardBreakdown,
 		RateMultiplier:        multiplier,
 		AccountRateMultiplier: accountRateMultiplier,
 		TotalCost:             totalCost,

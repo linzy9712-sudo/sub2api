@@ -62,12 +62,13 @@
 `service.BillingGuardLogInsertStats()`，绝不影响计费主流程。
 
 字段：`created_at`（发生时间）、`action`、`path`（gateway/openai/batch_image）、
-`request_id`、`model`、`user_id`、`api_key_id`、`account_id`、
+`request_id`、`model`、`user_id`、`api_key_id`、`account_id`、`group_id`（关联分组）、
 `rate_multiplier`（名义 token 倍率）、`account_rate_multiplier`（账号倍率）、
-`total_cost`（倍率前成本）、`actual_cost`（倍率后成本）、`reason`（拦截原因明细）。
+`total_cost`（倍率前成本）、`actual_cost`（倍率后成本）、`reason`（拦截原因明细）、
+`multiplier_breakdown`（**倍率来源拆解**，见下节）。
 
-表由迁移 `backend/migrations/222_billing_guard_logs.sql` 创建，**服务启动时自动执行迁移**，
-无需手工操作。
+表由迁移 `backend/migrations/222_billing_guard_logs.sql` 创建、`223_...diagnostics.sql` 扩展，
+**服务启动时自动执行迁移**，无需手工操作。
 
 复盘常用 SQL（psql）：
 
@@ -83,6 +84,50 @@
     -- 按 APIKey 汇总（谁最常触发）
     SELECT api_key_id, count(*), max(rate_multiplier)
     FROM billing_guard_logs GROUP BY 1 ORDER BY 2 DESC;
+## 诊断：异常倍率来自哪一层？
+
+倍率是**多层叠加 + 多级缓存**的结果。拦截时各层实际取值会写进
+`multiplier_breakdown` 字段（ALERT 日志里也有），格式如：
+
+    group_default=2000,user_rate=1,peak=1,account_rate=1
+
+各层含义与缓存：
+
+| 层级 | 来源 | 缓存 |
+| --- | --- | --- |
+| `system_default` | config.yaml 的 `default.rate_multiplier` | 无（启动时加载） |
+| `group_default` | `groups.rate_multiplier` | **APIKey 鉴权缓存快照**（L1 15s / L2 300s） |
+| `user_rate` | `user_group_rate_multipliers.rate_multiplier`（用户专属覆盖） | 进程内解析缓存（默认 30s） |
+| `peak` | `groups.peak_rate_*`（仅订阅类型分组，高峰时段生效） | 同上（Group 快照） |
+| `image_rate` / `video_rate` | `groups.image/video_rate_*`（独立倍率开启时） | 同上（Group 快照） |
+| `account_rate` | `accounts.rate_multiplier`（作用于账号配额） | 账号对象缓存 |
+
+**拆解值与数据库对不上 = 缓存陈旧**（典型原因：直接 SQL 改库、恢复备份、迁移改表——
+这些都不会触发缓存失效）。处理：重启服务立即清空全部进程内缓存；
+Redis 鉴权缓存可等 5 分钟自然过期，或走管理后台正常修改一次该分组触发主动失效。
+
+逐层核对 SQL：
+
+    -- ① 分组：倍率 + 高峰 + 图片/视频独立倍率（group_id 取审计行）
+    SELECT id, name, platform, rate_multiplier,
+           peak_rate_enabled, peak_rate_multiplier, peak_start, peak_end,
+           image_rate_independent, image_rate_multiplier,
+           video_rate_independent, video_rate_multiplier
+    FROM groups WHERE id = <审计行里的 group_id>;
+
+    -- ② 用户专属倍率覆盖（最容易被忽略的一张表）
+    SELECT user_id, group_id, rate_multiplier
+    FROM user_group_rate_multipliers
+    WHERE group_id = <group_id> ORDER BY rate_multiplier DESC;
+
+    -- ③ 账号倍率
+    SELECT id, name, platform, rate_multiplier FROM accounts
+    WHERE rate_multiplier IS NOT NULL AND rate_multiplier > 1 ORDER BY rate_multiplier DESC;
+
+    -- ④ 系统默认倍率（不在数据库）：cat /opt/sub2api/config.yaml 看 default.rate_multiplier
+
+如果四处值都正常、但拦截仍在发生：看拆解字段里具体是哪个 key 异常，
+再对照上表缓存 TTL 判断是否缓存陈旧；重启服务后重试即可确认。
 
 ## 测试
 

@@ -21,9 +21,10 @@ func TestBillingGuardLogRecorder_InsertsRow(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO billing_guard_logs")).
 		WithArgs(
 			"blocked", "gateway", "req-1", "claude-sonnet-4",
-			int64(601), int64(501), int64(701),
+			int64(601), int64(501), int64(701), int64(7),
 			1000.0, 1.0, 0.00012, 0.12,
 			"rate_multiplier 1000.00 exceeds max 100.00",
+			"group_default=1000,account_rate=1",
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -35,6 +36,8 @@ func TestBillingGuardLogRecorder_InsertsRow(t *testing.T) {
 		UserID:                601,
 		APIKeyID:              501,
 		AccountID:             701,
+		GroupID:               7,
+		Breakdown:             "group_default=1000,account_rate=1",
 		RateMultiplier:        1000,
 		AccountRateMultiplier: 1,
 		TotalCost:             0.00012,

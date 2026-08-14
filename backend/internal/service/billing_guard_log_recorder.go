@@ -38,9 +38,10 @@ func NewBillingGuardLogRecorder(db *sql.DB) *BillingGuardLogRecorder {
 
 const insertBillingGuardLogSQL = `
 INSERT INTO billing_guard_logs
-    (action, path, request_id, model, user_id, api_key_id, account_id,
-     rate_multiplier, account_rate_multiplier, total_cost, actual_cost, reason)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
+    (action, path, request_id, model, user_id, api_key_id, account_id, group_id,
+     rate_multiplier, account_rate_multiplier, total_cost, actual_cost, reason,
+     multiplier_breakdown)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`
 
 // RecordEvent 实现 billingguard.Recorder。
 func (r *BillingGuardLogRecorder) RecordEvent(ctx context.Context, ev billingguard.Event, action, reason string) {
@@ -58,11 +59,13 @@ func (r *BillingGuardLogRecorder) RecordEvent(ctx context.Context, ev billinggua
 		ev.UserID,
 		ev.APIKeyID,
 		ev.AccountID,
+		ev.GroupID,
 		ev.RateMultiplier,
 		ev.AccountRateMultiplier,
 		ev.TotalCost,
 		ev.ActualCost,
 		reason,
+		ev.Breakdown,
 	); err != nil {
 		billingGuardLogInsertErrorTotal.Add(1)
 		slog.Warn("billingguard: insert billing_guard_logs failed (audit only, billing unaffected)",

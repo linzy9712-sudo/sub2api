@@ -780,13 +780,16 @@ func TestGatewayServiceRecordUsage_BillingGuardBlockWritesAuditEvent(t *testing.
 	require.Zero(t, usageRepo.calls)
 	require.Zero(t, billingRepo.calls)
 
-	// 审计日志：拦截事件应回调记录器（生产装配为 billing_guard_logs 表写入）。
+	// 审计日志：拦截事件应回调记录器（生产装配为 billing_guard_logs 表写入），
+	// 且携带倍率来源拆解（诊断缓存陈旧/配置错误的依据）。
 	select {
 	case call := <-rec.ch:
 		require.Equal(t, "blocked", call.action)
 		require.Equal(t, "gateway", call.ev.Path)
 		require.Equal(t, int64(603), call.ev.UserID)
+		require.Equal(t, groupID, call.ev.GroupID)
 		require.Equal(t, 1000.0, call.ev.RateMultiplier)
+		require.Contains(t, call.ev.Breakdown, "group_default=1000")
 		require.Contains(t, call.reason, "rate_multiplier 1000.00")
 	case <-time.After(5 * time.Second):
 		t.Fatal("audit recorder was not called")

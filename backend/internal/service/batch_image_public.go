@@ -1000,6 +1000,9 @@ func (s *BatchImagePublicService) ensureGroupAllowsBatchImage(ctx context.Contex
 func (s *BatchImagePublicService) resolvePricingSnapshot(ctx context.Context, owner BatchImageOwner, req BatchImageSubmitRequest, provider string, account *Account) (*BatchImagePricingSnapshot, error) {
 	unit := -1.0
 	groupMultiplier := 1.0
+	groupDefaultMultiplier := 1.0
+	effectiveGroupMultiplier := 1.0
+	imageRateIndependent := false
 	discountMultiplier := defaultBatchImageDiscountMultiplier
 	holdMultiplier := defaultBatchImageHoldMultiplier
 	if owner.GroupID != nil && *owner.GroupID > 0 {
@@ -1013,11 +1016,11 @@ func (s *BatchImagePublicService) resolvePricingSnapshot(ctx context.Context, ow
 		if !group.AllowBatchImageGeneration {
 			return nil, ErrBatchImageGroupDisabled
 		}
-		groupDefaultMultiplier := group.RateMultiplier
+		groupDefaultMultiplier = group.RateMultiplier
 		if groupDefaultMultiplier < 0 {
 			groupDefaultMultiplier = 0
 		}
-		effectiveGroupMultiplier := groupDefaultMultiplier
+		effectiveGroupMultiplier = groupDefaultMultiplier
 		if s.UserGroupRateRepo != nil {
 			userRate, rateErr := s.UserGroupRateRepo.GetByUserAndGroup(ctx, owner.UserID, group.ID)
 			if rateErr != nil {
@@ -1029,6 +1032,7 @@ func (s *BatchImagePublicService) resolvePricingSnapshot(ctx context.Context, ow
 		}
 		groupMultiplier = effectiveGroupMultiplier
 		if group.ImageRateIndependent {
+			imageRateIndependent = true
 			groupMultiplier = group.ImageRateMultiplier
 		}
 		if groupMultiplier < 0 {
@@ -1082,12 +1086,23 @@ func (s *BatchImagePublicService) resolvePricingSnapshot(ctx context.Context, ow
 	if account != nil {
 		accountID = account.ID
 	}
+	guardGroupID := int64(0)
+	if owner.GroupID != nil {
+		guardGroupID = *owner.GroupID
+	}
+	guardImageRate := 0.0
+	if imageRateIndependent {
+		guardImageRate = groupMultiplier
+	}
+	guardBreakdown := buildBillingGuardBreakdown(0, groupDefaultMultiplier, effectiveGroupMultiplier, 1, guardImageRate, 0, accountMultiplier)
 	if guardErr := billingguard.CheckAndBlock(billingguard.Event{
 		Path:                  "batch_image",
 		Model:                 req.Model,
 		UserID:                owner.UserID,
 		APIKeyID:              owner.APIKeyID,
 		AccountID:             accountID,
+		GroupID:               guardGroupID,
+		Breakdown:             guardBreakdown,
 		RateMultiplier:        groupMultiplier,
 		AccountRateMultiplier: accountMultiplier,
 		TotalCost:             unit * float64(len(req.Items)),
