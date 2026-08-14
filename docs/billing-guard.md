@@ -128,6 +128,57 @@ Redis 鉴权缓存可等 5 分钟自然过期，或走管理后台正常修改�
 
 如果四处值都正常、但拦截仍在发生：看拆解字段里具体是哪个 key 异常，
 再对照上表缓存 TTL 判断是否缓存陈旧；重启服务后重试即可确认。
+## 分析手册：拦截发生后怎么定位与处置
+
+### 第一步：取最新的拦截记录
+
+    SELECT created_at, action, path, group_id, user_id, api_key_id, model,
+           rate_multiplier, multiplier_breakdown, reason
+    FROM billing_guard_logs ORDER BY created_at DESC LIMIT 10;
+
+### 第二步：读 multiplier_breakdown，判断异常来自哪一层
+
+| breakdown 示例 | 含义 | 去向 |
+| --- | --- | --- |
+| `group_default=2000` | 分组倍率本身就是 2000 | 查 `groups` 表 → 管理后台改回 |
+| `group_default=1,user_rate=2000` | 用户专属倍率覆盖是 2000 | 查 `user_group_rate_multipliers` 表 |
+| `group_default=1,peak=2000` | 高峰倍率 2000（请求落在高峰窗口，仅订阅分组） | 查 `groups.peak_rate_*` 配置 |
+| `image_rate=2000` / `video_rate=2000` | 图片/视频独立倍率异常 | 查 `groups.image/video_rate_*` |
+| `account_rate=2000` | 账号倍率异常 | 查 `accounts.rate_multiplier` |
+| 全部为 1，但 `rate_multiplier` 很大 | **比率兜底触发**（上游返回异常 usage、搜索附加费、长上下文叠加等） | 这类需要深挖，把整行发出来定位 |
+
+### 第三步：对照数据库现值，分类处置
+
+- **DB 值与 breakdown 一致** → 配置真的错了：走管理后台改回（后台修改会自动失效缓存）。
+  顺带排查是谁改的：直接 SQL 改库、批量脚本、迁移、备份恢复都会造成这类问题。
+- **DB 值是正常的，但 breakdown 是旧值** → **缓存陈旧**：
+  `systemctl restart sub2api` 立即清空全部进程内缓存；或等 5 分钟让 Redis 鉴权缓存自然过期。
+- **peak 异常** → 注意高峰倍率只在 [peak_start, peak_end) 时间段内生效，
+  请求时间落在这个窗口才会被乘上。
+
+### 第四步：修复后验证
+
+    ① 用同一把 Key 再发一个请求 → 不再出现 blocked 日志，usage_logs 正常入账；
+    ② billing_guard_logs 中该 group_id/user_id 不再新增 blocked 行；
+    ③ 用户余额恢复按配置正常扣费。
+
+### 日常巡检（建议每天一次）
+
+    -- 近 7 天拦截趋势
+    SELECT created_at::date AS day,
+           count(*) FILTER (WHERE action='blocked')  AS blocked,
+           count(*) FILTER (WHERE action='observed') AS observed
+    FROM billing_guard_logs GROUP BY 1 ORDER BY 1 DESC LIMIT 7;
+
+    -- 谁最常触发（按分组 / 按 Key）
+    SELECT group_id, count(*) AS n, max(rate_multiplier) AS max_rate
+    FROM billing_guard_logs WHERE group_id > 0 GROUP BY 1 ORDER BY n DESC LIMIT 10;
+
+    SELECT api_key_id, count(*) AS n, max(rate_multiplier) AS max_rate
+    FROM billing_guard_logs GROUP BY 1 ORDER BY n DESC LIMIT 10;
+
+拦截发生时会同时输出 ALERT 日志（`journalctl -u sub2api -f | grep billingguard`），
+如果希望被动告警（钉钉/webhook/邮件），可以在护栏里加通知回调——需要时随时可以加。
 
 ## 测试
 
