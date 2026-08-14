@@ -2,7 +2,7 @@
 # upgrade-with-guard.sh — 维护本地 billingguard 补丁并滚动升级（无需合入官方）
 #
 # 维护模型：
-#   - 官方仓库加 remote（默认 upstream），补丁在 guard 分支；
+#   - 官方仓库加 remote（默认 upstream），补丁在 feat/linzy9712/guard_exception_billing 分支；
 #   - 每次官方发新版：本脚本把补丁分支 rebase 到上游最新代码 → 构建 → 部署；
 #   - rebase 冲突时脚本中止，手动解决冲突后重跑即可；
 #   - 部署失败自动回滚，备份只保留最近 2 个。
@@ -21,7 +21,7 @@
 set -euo pipefail
 
 SRC_DIR=${SRC_DIR:-$(cd "$(dirname "$0")/.." && pwd)}   # 源码目录（含本脚本的仓库）
-GUARD_BRANCH=${GUARD_BRANCH:-guard}       # 承载补丁的分支
+GUARD_BRANCH=${GUARD_BRANCH:-feat/linzy9712/guard_exception_billing}  # 承载补丁的分支
 BASE_REMOTE=${BASE_REMOTE:-upstream}      # 官方仓库 remote；未配置时退回 origin
 BUILD_TAGS=${BUILD_TAGS:-embed}           # embed=带管理界面; none=纯 API
 VERSION_SUFFIX=${VERSION_SUFFIX:-guard}   # 版本戳后缀，如 0.1.180-guard.1
