@@ -70,8 +70,6 @@ fi
 if [ -z "$NEW_VER" ]; then
   NEW_VER="$(tr -d '\r\n' < backend/cmd/server/VERSION)"
 fi
-STAMP="${NEW_VER}-${VERSION_SUFFIX}.1"
-
 # —— 构建 ——
 cd "$SRC_DIR/backend"
 TAG_FLAG=""
@@ -98,6 +96,20 @@ if [ -n "$DEPLOY_HOST" ]; then
   esac
   echo "==> 远端架构: $REMOTE_ARCH"
 fi
+
+# 版本后缀自动递增：读远端当前版本，同基准版本时计数器 +1，避免版本号倒退
+# （如远端 0.1.176-guard.3，同基准升级后为 0.1.176-guard.4）。
+SUFFIX_CNT=1
+if [ -n "$DEPLOY_HOST" ]; then
+  REMOTE_VER="$($SSH_CMD "\"$REMOTE_BIN_DIR/sub2api\" -version" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9._-]+' | head -1 || true)"
+  if [[ "$REMOTE_VER" == "${NEW_VER}-${VERSION_SUFFIX}."* ]]; then
+    REMOTE_CNT="${REMOTE_VER##*.}"
+    if [[ "$REMOTE_CNT" =~ ^[0-9]+$ ]]; then
+      SUFFIX_CNT=$((REMOTE_CNT + 1))
+    fi
+  fi
+fi
+STAMP="${NEW_VER}-${VERSION_SUFFIX}.${SUFFIX_CNT}"
 
 echo "==> 构建 $STAMP (tags: ${TAG_FLAG:-none})"
 CGO_ENABLED=0 $GOOS_FLAG "$GO" build $TAG_FLAG -trimpath \
