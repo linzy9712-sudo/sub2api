@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -194,6 +195,29 @@ func TestAdminService_BatchSetGroupRateMultipliers(t *testing.T) {
 		})
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "sync failed")
+	})
+
+	t.Run("rejects multiplier above guard write limit", func(t *testing.T) {
+		billingguard.Configure(billingguard.Config{
+			Enabled:                  true,
+			MaxRateMultiplier:        1000,
+			MaxAccountRateMultiplier: 1000,
+			ValidateWrites:           true,
+		})
+		t.Cleanup(func() { billingguard.Configure(billingguard.DefaultConfig()) })
+
+		repo := &userGroupRateRepoStubForGroupRate{}
+		svc := &adminServiceImpl{userGroupRateRepo: repo}
+
+		err := svc.BatchSetGroupRateMultipliers(context.Background(), 10, []GroupRateMultiplierInput{
+			{UserID: 1, RateMultiplier: 105072},
+		})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "exceeds max")
+		require.Contains(t, err.Error(), "user_id=1")
+		// 未同步到 repo
+		require.Equal(t, int64(0), repo.syncedGroupID)
+		require.Nil(t, repo.syncedEntries)
 	})
 }
 

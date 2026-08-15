@@ -9,6 +9,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -296,8 +297,9 @@ func groupSupportsOAuthOnlyFilter(platform string) bool {
 }
 
 func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupInput) (*Group, error) {
-	if input.RateMultiplier <= 0 {
-		return nil, errors.New("rate_multiplier must be > 0")
+	// 写入侧护栏：倍率上限与计费拦截共用同一阈值，从源头拒绝脏配置。
+	if err := billingguard.ValidateWriteRateMultiplier("rate_multiplier", input.RateMultiplier); err != nil {
+		return nil, err
 	}
 
 	platform := NormalizeGroupPlatform(input.Platform)
@@ -338,8 +340,8 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	audioSTTPricePerHour := normalizePrice(input.AudioSTTPricePerHour)
 	imageRateMultiplier := 1.0
 	if input.ImageRateMultiplier != nil {
-		if *input.ImageRateMultiplier < 0 {
-			return nil, errors.New("image_rate_multiplier must be >= 0")
+		if err := billingguard.ValidateWriteRateMultiplierAllowZero("image_rate_multiplier", *input.ImageRateMultiplier); err != nil {
+			return nil, err
 		}
 		imageRateMultiplier = *input.ImageRateMultiplier
 	}
@@ -364,14 +366,17 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	}
 	videoRateMultiplier := 1.0
 	if input.VideoRateMultiplier != nil {
-		if *input.VideoRateMultiplier < 0 {
-			return nil, errors.New("video_rate_multiplier must be >= 0")
+		if err := billingguard.ValidateWriteRateMultiplierAllowZero("video_rate_multiplier", *input.VideoRateMultiplier); err != nil {
+			return nil, err
 		}
 		videoRateMultiplier = *input.VideoRateMultiplier
 	}
 
 	peakRateMultiplier := 1.0
 	if input.PeakRateMultiplier != nil {
+		if err := billingguard.ValidateWriteRateMultiplierAllowZero("peak_rate_multiplier", *input.PeakRateMultiplier); err != nil {
+			return nil, err
+		}
 		peakRateMultiplier = *input.PeakRateMultiplier
 	}
 	// 先归一化（非订阅分组清空高峰配置、清洗停用状态下的脏字段）再校验，与 UpdateGroup 同一收口。
@@ -1074,8 +1079,9 @@ func (s *adminServiceImpl) BatchSetGroupRateMultipliers(ctx context.Context, gro
 		return nil
 	}
 	for _, e := range entries {
-		if e.RateMultiplier <= 0 {
-			return fmt.Errorf("rate_multiplier must be > 0 (user_id=%d)", e.UserID)
+		// 写入侧护栏：与计费拦截共用同一阈值（本例曾出现 105072x 脏数据）。
+		if err := billingguard.ValidateWriteRateMultiplier("rate_multiplier", e.RateMultiplier); err != nil {
+			return fmt.Errorf("%v (user_id=%d)", err, e.UserID)
 		}
 	}
 	return s.userGroupRateRepo.SyncGroupRateMultipliers(ctx, groupID, entries)

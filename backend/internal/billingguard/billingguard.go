@@ -39,6 +39,7 @@ const (
 	EnvMaxRateMultiplier        = "SUB2API_BILLING_GUARD_MAX_RATE_MULTIPLIER"
 	EnvMaxAccountRateMultiplier = "SUB2API_BILLING_GUARD_MAX_ACCOUNT_RATE_MULTIPLIER"
 	EnvMaxAbsoluteCostUSD       = "SUB2API_BILLING_GUARD_MAX_ABSOLUTE_COST_USD"
+	EnvValidateWrites           = "SUB2API_BILLING_GUARD_VALIDATE_WRITES"
 	EnvObserveOnly              = "SUB2API_BILLING_GUARD_OBSERVE_ONLY"
 )
 
@@ -102,6 +103,10 @@ type Config struct {
 	MaxAbsoluteCostUSD float64
 	// ObserveOnly 只告警不拦截，用于上线前灰度观察。
 	ObserveOnly bool
+	// ValidateWrites 在管理端写入倍率时校验上限（默认 true）：
+	// 超过阈值的分组/用户/账号倍率直接拒绝落库，从源头避免脏数据。
+	// 需要临时写入超限值做测试时置 false（如构造 2000x 测试分组）。
+	ValidateWrites bool
 }
 
 // DefaultConfig 返回默认配置：启用、倍率上限 1000、单笔金额上限关闭。
@@ -112,6 +117,7 @@ func DefaultConfig() Config {
 		MaxAccountRateMultiplier: DefaultMaxAccountRateMultiplier,
 		MaxAbsoluteCostUSD:       0,
 		ObserveOnly:              false,
+		ValidateWrites:           true,
 	}
 }
 
@@ -178,6 +184,7 @@ func LoadFromEnv() Config {
 	cfg.MaxAccountRateMultiplier = envFloat(EnvMaxAccountRateMultiplier, cfg.MaxAccountRateMultiplier)
 	cfg.MaxAbsoluteCostUSD = envFloat(EnvMaxAbsoluteCostUSD, cfg.MaxAbsoluteCostUSD)
 	cfg.ObserveOnly = envBool(EnvObserveOnly, cfg.ObserveOnly)
+	cfg.ValidateWrites = envBool(EnvValidateWrites, cfg.ValidateWrites)
 	return cfg
 }
 
@@ -321,6 +328,52 @@ func guardAttrs(ev Event, reason string) []any {
 // NewBlockError 包装 ErrBlocked 哨兵错误并附带具体原因。
 func NewBlockError(reason string) error {
 	return fmt.Errorf("%w: %s", ErrBlocked, strings.TrimSpace(reason))
+}
+
+// —— 写入侧校验：管理端倍率写入口复用护栏阈值，从源头拒绝脏配置 ——
+
+// ValidateWriteRateMultiplier 校验分组/用户级倍率写入：
+// 必须 > 0，且不超过当前配置的 MaxRateMultiplier（ValidateWrites=false 时只校验 > 0）。
+func ValidateWriteRateMultiplier(field string, v float64) error {
+	if v <= 0 {
+		return fmt.Errorf("%s must be > 0", field)
+	}
+	return validateRateMultiplierUpperBound(field, v, false)
+}
+
+// ValidateWriteRateMultiplierAllowZero 校验允许 0 的倍率写入（图片/视频独立倍率、高峰倍率）：
+// 必须 >= 0，且不超过当前配置的 MaxRateMultiplier。
+func ValidateWriteRateMultiplierAllowZero(field string, v float64) error {
+	if v < 0 {
+		return fmt.Errorf("%s must be >= 0", field)
+	}
+	return validateRateMultiplierUpperBound(field, v, false)
+}
+
+// ValidateWriteAccountRateMultiplier 校验账号倍率写入：
+// 必须 >= 0（0 = 该账号计费为 0），且不超过 MaxAccountRateMultiplier。
+func ValidateWriteAccountRateMultiplier(field string, v float64) error {
+	if v < 0 {
+		return fmt.Errorf("%s must be >= 0", field)
+	}
+	return validateRateMultiplierUpperBound(field, v, true)
+}
+
+// validateRateMultiplierUpperBound 读取当前护栏配置执行上限校验；
+// ValidateWrites=false 时跳过上限（仍保留调用方的正负校验）。
+func validateRateMultiplierUpperBound(field string, v float64, account bool) error {
+	ensureLoaded()
+	mu.RLock()
+	validateWrites := current.ValidateWrites
+	limit := current.MaxRateMultiplier
+	if account {
+		limit = current.MaxAccountRateMultiplier
+	}
+	mu.RUnlock()
+	if validateWrites && v > limit {
+		return fmt.Errorf("%s %.2f exceeds max %.2f (billing guard write limit)", field, v, limit)
+	}
+	return nil
 }
 
 // Recorder 是护栏审计日志记录器接口（可选装配）。

@@ -215,6 +215,49 @@ func TestNewBlockError(t *testing.T) {
 	require.True(t, errors.Is(err, ErrBlocked))
 }
 
+func TestValidateWriteRateMultiplier(t *testing.T) {
+	resetGuard(t)
+	Configure(Config{Enabled: true, MaxRateMultiplier: 100, MaxAccountRateMultiplier: 50, ValidateWrites: true})
+
+	// 下限
+	require.EqualError(t, ValidateWriteRateMultiplier("rate_multiplier", 0), "rate_multiplier must be > 0")
+	require.EqualError(t, ValidateWriteRateMultiplier("rate_multiplier", -1), "rate_multiplier must be > 0")
+	// 上限（含边界）
+	require.NoError(t, ValidateWriteRateMultiplier("rate_multiplier", 100))
+	err := ValidateWriteRateMultiplier("rate_multiplier", 105072)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "rate_multiplier 105072.00 exceeds max 100.00")
+}
+
+func TestValidateWriteRateMultiplierAllowZero(t *testing.T) {
+	resetGuard(t)
+	Configure(Config{Enabled: true, MaxRateMultiplier: 100, MaxAccountRateMultiplier: 50, ValidateWrites: true})
+
+	require.NoError(t, ValidateWriteRateMultiplierAllowZero("image_rate_multiplier", 0))
+	require.EqualError(t, ValidateWriteRateMultiplierAllowZero("image_rate_multiplier", -1), "image_rate_multiplier must be >= 0")
+	require.Error(t, ValidateWriteRateMultiplierAllowZero("image_rate_multiplier", 101))
+}
+
+func TestValidateWriteAccountRateMultiplier(t *testing.T) {
+	resetGuard(t)
+	Configure(Config{Enabled: true, MaxRateMultiplier: 100, MaxAccountRateMultiplier: 50, ValidateWrites: true})
+
+	require.NoError(t, ValidateWriteAccountRateMultiplier("rate_multiplier", 0))
+	require.NoError(t, ValidateWriteAccountRateMultiplier("rate_multiplier", 50))
+	err := ValidateWriteAccountRateMultiplier("rate_multiplier", 51)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds max 50.00")
+}
+
+func TestValidateWrites_DisabledSkipsUpperBound(t *testing.T) {
+	resetGuard(t)
+	Configure(Config{Enabled: true, MaxRateMultiplier: 100, MaxAccountRateMultiplier: 50, ValidateWrites: false})
+
+	require.NoError(t, ValidateWriteRateMultiplier("rate_multiplier", 105072))
+	// 下限校验仍然保留
+	require.EqualError(t, ValidateWriteRateMultiplier("rate_multiplier", 0), "rate_multiplier must be > 0")
+}
+
 func TestCheckAndBlock_NotifiesRecorderOnBlock(t *testing.T) {
 	resetGuard(t)
 	Configure(Config{Enabled: true, MaxRateMultiplier: 100, MaxAccountRateMultiplier: 100})

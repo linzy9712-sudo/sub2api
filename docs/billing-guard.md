@@ -42,8 +42,13 @@
 | `SUB2API_BILLING_GUARD_MAX_ACCOUNT_RATE_MULTIPLIER` | `1000` | 账号倍率上限 |
 | `SUB2API_BILLING_GUARD_MAX_ABSOLUTE_COST_USD` | `0` | 单笔金额上限；`<= 0` 关闭 |
 | `SUB2API_BILLING_GUARD_OBSERVE_ONLY` | `false` | `true` 时只告警不拦截（灰度观察用） |
+| `SUB2API_BILLING_GUARD_VALIDATE_WRITES` | `true` | 管理端写入倍率时校验上限（超限拒绝落库）；需要临时写入超限值做测试时置 `false` |
 
 建议上线顺序：先 `OBSERVE_ONLY=true` 观察告警频率，确认无误报后再切到拦截模式。
+
+**写入侧校验**：分组倍率、用户专属倍率（批量/单个）、图片/视频独立倍率、高峰倍率、
+账号倍率的全部写入路径，与计费拦截共用同一阈值——超过上限的值会在落库前被拒绝，
+从源头杜绝 105072x 这类脏数据（拦截面已缩小到"直接 SQL 改库"一种）。
 
 ## 拦截时的行为
 

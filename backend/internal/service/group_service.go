@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
@@ -100,8 +101,8 @@ func NewGroupService(groupRepo GroupRepository, authCacheInvalidator APIKeyAuthC
 func (s *GroupService) Create(ctx context.Context, req CreateGroupRequest) (*Group, error) {
 	imageRateMultiplier := 1.0
 	if req.ImageRateMultiplier != nil {
-		if *req.ImageRateMultiplier < 0 {
-			return nil, fmt.Errorf("image_rate_multiplier must be >= 0")
+		if err := billingguard.ValidateWriteRateMultiplierAllowZero("image_rate_multiplier", *req.ImageRateMultiplier); err != nil {
+			return nil, err
 		}
 		imageRateMultiplier = *req.ImageRateMultiplier
 	}
@@ -204,8 +205,8 @@ func (s *GroupService) Update(ctx context.Context, id int64, req UpdateGroupRequ
 		group.ImageRateIndependent = *req.ImageRateIndependent
 	}
 	if req.ImageRateMultiplier != nil {
-		if *req.ImageRateMultiplier < 0 {
-			return nil, fmt.Errorf("image_rate_multiplier must be >= 0")
+		if err := billingguard.ValidateWriteRateMultiplierAllowZero("image_rate_multiplier", *req.ImageRateMultiplier); err != nil {
+			return nil, err
 		}
 		group.ImageRateMultiplier = *req.ImageRateMultiplier
 	}

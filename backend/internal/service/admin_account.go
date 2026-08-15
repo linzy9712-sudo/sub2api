@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -447,8 +448,8 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		account.AutoPauseOnExpired = true
 	}
 	if input.RateMultiplier != nil {
-		if *input.RateMultiplier < 0 {
-			return nil, errors.New("rate_multiplier must be >= 0")
+		if err := billingguard.ValidateWriteAccountRateMultiplier("rate_multiplier", *input.RateMultiplier); err != nil {
+			return nil, err
 		}
 		account.RateMultiplier = input.RateMultiplier
 	}
@@ -744,8 +745,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		account.Priority = *input.Priority
 	}
 	if input.RateMultiplier != nil {
-		if *input.RateMultiplier < 0 {
-			return nil, errors.New("rate_multiplier must be >= 0")
+		if err := billingguard.ValidateWriteAccountRateMultiplier("rate_multiplier", *input.RateMultiplier); err != nil {
+			return nil, err
 		}
 		// 同步开启时倍率归上游所有，手工值活不过下一次成功探测（表现为"改了又自己
 		// 变回去"），与批量路径一样直接拒绝。判断的是本次请求生效后的状态：上面
@@ -1004,8 +1005,8 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 
 	if input.RateMultiplier != nil {
-		if *input.RateMultiplier < 0 {
-			return nil, errors.New("rate_multiplier must be >= 0")
+		if err := billingguard.ValidateWriteAccountRateMultiplier("rate_multiplier", *input.RateMultiplier); err != nil {
+			return nil, err
 		}
 		syncEnabledCount := 0
 		for _, account := range cachedTargets {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 )
@@ -342,6 +343,10 @@ func ValidatePeakRateConfig(subscriptionType string, enabled bool, start, end st
 	}
 	if multiplier < 0 {
 		return errors.New("peak_rate_multiplier 不能为负")
+	}
+	// 写入侧护栏：高峰倍率上限与计费拦截共用同一阈值，从源头拒绝脏配置。
+	if err := billingguard.ValidateWriteRateMultiplierAllowZero("peak_rate_multiplier", multiplier); err != nil {
+		return err
 	}
 	return nil
 }
