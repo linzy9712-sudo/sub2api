@@ -249,6 +249,24 @@ func TestValidateWriteAccountRateMultiplier(t *testing.T) {
 	require.Contains(t, err.Error(), "exceeds max 50.00")
 }
 
+func TestShouldLogMultiplier(t *testing.T) {
+	resetGuard(t)
+	Configure(Config{Enabled: true, MaxRateMultiplier: 1000, MaxAccountRateMultiplier: 1000, LogAboveMultiplier: 10})
+
+	require.False(t, ShouldLogMultiplier(10))
+	require.True(t, ShouldLogMultiplier(10.01))
+	require.False(t, ShouldLogMultiplier(1))
+	require.False(t, ShouldLogMultiplier(math.NaN()))
+
+	// 组件关闭：不输出可疑日志
+	Configure(Config{Enabled: false, MaxRateMultiplier: 1000, MaxAccountRateMultiplier: 1000, LogAboveMultiplier: 10})
+	require.False(t, ShouldLogMultiplier(999))
+
+	// 阈值 <= 0：关闭可疑日志
+	Configure(Config{Enabled: true, MaxRateMultiplier: 1000, MaxAccountRateMultiplier: 1000, LogAboveMultiplier: 0})
+	require.False(t, ShouldLogMultiplier(999))
+}
+
 func TestValidateWrites_DisabledSkipsUpperBound(t *testing.T) {
 	resetGuard(t)
 	Configure(Config{Enabled: true, MaxRateMultiplier: 100, MaxAccountRateMultiplier: 50, ValidateWrites: false})

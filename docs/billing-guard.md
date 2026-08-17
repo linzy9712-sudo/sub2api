@@ -43,8 +43,31 @@
 | `SUB2API_BILLING_GUARD_MAX_ABSOLUTE_COST_USD` | `0` | 单笔金额上限；`<= 0` 关闭 |
 | `SUB2API_BILLING_GUARD_OBSERVE_ONLY` | `false` | `true` 时只告警不拦截（灰度观察用） |
 | `SUB2API_BILLING_GUARD_VALIDATE_WRITES` | `true` | 管理端写入倍率时校验上限（超限拒绝落库）；需要临时写入超限值做测试时置 `false` |
+| `SUB2API_BILLING_GUARD_LOG_ABOVE_MULTIPLIER` | `10` | 可疑倍率日志阈值：解析/写入/计费时倍率超过该值（未达拦截阈值）即输出 WARN 日志；`<= 0` 关闭 |
 
 建议上线顺序：先 `OBSERVE_ONLY=true` 观察告警频率，确认无误报后再切到拦截模式。
+## 日志体系：倍率来源全链路可查（journald，非数据库）
+
+护栏的所有日志走 `slog`（应用统一 handler）输出到 stdout → systemd journal，
+查询方式：
+
+    journalctl -u sub2api -f | grep -i billingguard
+
+三层日志覆盖（关键词统一前缀 `billingguard:`）：
+
+| 层级 | 触发点 | 日志内容 | 关键词 |
+| --- | --- | --- | --- |
+| 读路径 | 解析用户专属倍率（缓存命中 / DB 加载） | user_id / group_id / user_rate / group_default / source | `resolver cache hit`、`resolver db load` |
+| 读路径 | 读取 user_group_rate_multipliers 行 | 行值 + **row_created_at / row_updated_at**（写入时间线索） | `row in database` |
+| 写路径 | SyncUserGroupRates / SyncGroupRateMultipliers | 写入的 user_id / group_id / 值 | `write (` |
+| 计费路径 | 倍率 > 日志阈值但未达拦截阈值 | 来源拆解（group_default/user_rate/peak/account_rate...） | `elevated multiplier observed` |
+| 计费路径 | 达拦截阈值 | 同上 + 拦截原因 | `blocked abnormal billing record` |
+
+日志阈值独立于拦截阈值：`SUB2API_BILLING_GUARD_LOG_ABOVE_MULTIPLIER`（默认 **10**，
+`<=0` 关闭）。倍率只要 >10 就会在**解析和写入时**留痕，>1000 才会拦截。
+
+排查思路：拦截行里的 `row_updated_at`/`row_created_at` 对齐操作时间线（谁在操作、
+哪个脚本在跑），`source` 字段区分值来自缓存还是数据库。
 
 **写入侧校验**：分组倍率、用户专属倍率（批量/单个）、图片/视频独立倍率、高峰倍率、
 账号倍率的全部写入路径，与计费拦截共用同一阈值——超过上限的值会在落库前被拒绝，

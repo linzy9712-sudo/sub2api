@@ -3,8 +3,10 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/billingguard"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
@@ -148,6 +150,25 @@ func (r *userGroupRateRepository) GetByUserAndGroup(ctx context.Context, userID,
 		return nil, nil
 	}
 	v := rate.Float64
+	// 可疑倍率日志（读路径-数据库行）：值超出日志阈值时额外取行时间戳一并输出。
+	// created_at/updated_at 是「这行数据何时写入/修改」的最强线索，
+	// 配合操作时间线可定位写入方（API 调用 / 脚本 / 直连 SQL）。
+	if billingguard.ShouldLogMultiplier(v) {
+		var createdAt, updatedAt time.Time
+		if rows, qErr := r.sql.QueryContext(ctx,
+			`SELECT created_at, updated_at FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = $2`,
+			userID, groupID); qErr == nil {
+			if rows.Next() {
+				_ = rows.Scan(&createdAt, &updatedAt)
+			}
+			_ = rows.Close()
+		}
+		slog.Warn("billingguard: suspicious user group rate row in database",
+			"user_id", userID, "group_id", groupID,
+			"rate_multiplier", v,
+			"row_created_at", createdAt, "row_updated_at", updatedAt,
+			"source", "db_row")
+	}
 	return &v, nil
 }
 
@@ -195,6 +216,12 @@ func (r *userGroupRateRepository) SyncUserGroupRates(ctx context.Context, userID
 		if rate == nil {
 			clearGroupIDs = append(clearGroupIDs, groupID)
 		} else {
+			// 可疑倍率日志（写路径）：值超出日志阈值即输出，记录写入方上下文。
+			if billingguard.ShouldLogMultiplier(*rate) {
+				slog.Warn("billingguard: suspicious user group rate write (SyncUserGroupRates)",
+					"user_id", userID, "group_id", groupID, "rate_multiplier", *rate,
+					"source", "write_api")
+			}
 			upsertGroupIDs = append(upsertGroupIDs, groupID)
 			upsertRates = append(upsertRates, *rate)
 		}
@@ -283,6 +310,12 @@ func (r *userGroupRateRepository) SyncGroupRateMultipliers(ctx context.Context, 
 	userIDs := make([]int64, len(entries))
 	rates := make([]float64, len(entries))
 	for i, e := range entries {
+		// 可疑倍率日志（写路径）：值超出日志阈值即输出，记录写入方上下文。
+		if billingguard.ShouldLogMultiplier(e.RateMultiplier) {
+			slog.Warn("billingguard: suspicious user group rate write (SyncGroupRateMultipliers)",
+				"user_id", e.UserID, "group_id", groupID, "rate_multiplier", e.RateMultiplier,
+				"source", "write_api")
+		}
 		userIDs[i] = e.UserID
 		rates[i] = e.RateMultiplier
 	}

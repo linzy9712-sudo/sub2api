@@ -41,6 +41,7 @@ const (
 	EnvMaxAbsoluteCostUSD       = "SUB2API_BILLING_GUARD_MAX_ABSOLUTE_COST_USD"
 	EnvValidateWrites           = "SUB2API_BILLING_GUARD_VALIDATE_WRITES"
 	EnvObserveOnly              = "SUB2API_BILLING_GUARD_OBSERVE_ONLY"
+	EnvLogAboveMultiplier       = "SUB2API_BILLING_GUARD_LOG_ABOVE_MULTIPLIER"
 )
 
 const (
@@ -49,6 +50,9 @@ const (
 	DefaultMaxRateMultiplier = 1000
 	// DefaultMaxAccountRateMultiplier 是账号计费倍率默认上限。
 	DefaultMaxAccountRateMultiplier = 1000
+	// DefaultLogAboveMultiplier 是可疑倍率日志阈值：解析/写入/计费时发现
+	// 倍率超过该值（但未达拦截阈值）即输出 WARN 日志，供复盘倍率来源。
+	DefaultLogAboveMultiplier = 10
 )
 
 // ratioEpsilon 是 ActualCost/TotalCost 比率检查的相对容差，吸收浮点尾数噪声，
@@ -107,6 +111,10 @@ type Config struct {
 	// 超过阈值的分组/用户/账号倍率直接拒绝落库，从源头避免脏数据。
 	// 需要临时写入超限值做测试时置 false（如构造 2000x 测试分组）。
 	ValidateWrites bool
+	// LogAboveMultiplier 是可疑倍率日志阈值：解析/写入/计费时发现倍率
+	// 超过该值（未达拦截阈值）即输出 WARN 日志，用于复盘倍率来源；
+	// <= 0 关闭。默认 10。
+	LogAboveMultiplier float64
 }
 
 // DefaultConfig 返回默认配置：启用、倍率上限 1000、单笔金额上限关闭。
@@ -118,6 +126,7 @@ func DefaultConfig() Config {
 		MaxAbsoluteCostUSD:       0,
 		ObserveOnly:              false,
 		ValidateWrites:           true,
+		LogAboveMultiplier:       DefaultLogAboveMultiplier,
 	}
 }
 
@@ -131,6 +140,9 @@ func (c Config) normalized() Config {
 	}
 	if math.IsNaN(c.MaxAbsoluteCostUSD) || math.IsInf(c.MaxAbsoluteCostUSD, 0) || c.MaxAbsoluteCostUSD < 0 {
 		c.MaxAbsoluteCostUSD = 0
+	}
+	if math.IsNaN(c.LogAboveMultiplier) || math.IsInf(c.LogAboveMultiplier, 0) {
+		c.LogAboveMultiplier = DefaultLogAboveMultiplier
 	}
 	return c
 }
@@ -185,6 +197,7 @@ func LoadFromEnv() Config {
 	cfg.MaxAbsoluteCostUSD = envFloat(EnvMaxAbsoluteCostUSD, cfg.MaxAbsoluteCostUSD)
 	cfg.ObserveOnly = envBool(EnvObserveOnly, cfg.ObserveOnly)
 	cfg.ValidateWrites = envBool(EnvValidateWrites, cfg.ValidateWrites)
+	cfg.LogAboveMultiplier = envFloat(EnvLogAboveMultiplier, cfg.LogAboveMultiplier)
 	return cfg
 }
 
@@ -275,6 +288,20 @@ func Check(ev Event) Decision {
 	return Decision{Block: true, Reason: strings.Join(reasons, "; ")}
 }
 
+// ShouldLogMultiplier 判断倍率是否超过"可疑日志阈值"（未达拦截阈值）。
+// 供解析/写入路径在发现可疑值时输出带来源的 WARN 日志。
+func ShouldLogMultiplier(v float64) bool {
+	if !isFinite(v) {
+		return false
+	}
+	ensureLoaded()
+	mu.RLock()
+	threshold := current.LogAboveMultiplier
+	enabled := current.Enabled
+	mu.RUnlock()
+	return enabled && threshold > 0 && v > threshold
+}
+
 // CheckAndBlock 是计费路径的统一挂载点：
 //   - 未命中 / 组件关闭：返回 nil，透明放行；
 //   - ObserveOnly：告警但不拦截，返回 nil；
@@ -284,6 +311,12 @@ func Check(ev Event) Decision {
 func CheckAndBlock(ev Event) error {
 	decision := Check(ev)
 	if !decision.Block {
+		// 未达拦截阈值但超过日志阈值：记录"可疑倍率"WARN（含来源拆解），
+		// 用于复盘倍率来源与趋势，不影响计费。
+		if ShouldLogMultiplier(ev.RateMultiplier) || ShouldLogMultiplier(ev.AccountRateMultiplier) {
+			slog.Warn("billingguard: elevated multiplier observed (below block threshold)",
+				guardAttrs(ev, "below block threshold")...)
+		}
 		return nil
 	}
 
