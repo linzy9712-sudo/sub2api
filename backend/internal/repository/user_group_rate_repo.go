@@ -135,11 +135,13 @@ func (r *userGroupRateRepository) GetByGroupID(ctx context.Context, groupID int6
 	return result, nil
 }
 
-// GetByUserAndGroup 获取用户在特定分组的专属 rate_multiplier（NULL 返回 nil）
+// GetByUserAndGroup 获取用户在特定分组的专属 rate_multiplier（NULL 返回 nil）。
+// 同时读取行时间戳：倍率可疑时随日志输出，作为「数据何时写入」的取证线索。
 func (r *userGroupRateRepository) GetByUserAndGroup(ctx context.Context, userID, groupID int64) (*float64, error) {
-	query := `SELECT rate_multiplier FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = $2`
+	query := `SELECT rate_multiplier, created_at, updated_at FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = $2`
 	var rate sql.NullFloat64
-	err := scanSingleRow(ctx, r.sql, query, []any{userID, groupID}, &rate)
+	var createdAt, updatedAt time.Time
+	err := scanSingleRow(ctx, r.sql, query, []any{userID, groupID}, &rate, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -150,19 +152,9 @@ func (r *userGroupRateRepository) GetByUserAndGroup(ctx context.Context, userID,
 		return nil, nil
 	}
 	v := rate.Float64
-	// 可疑倍率日志（读路径-数据库行）：值超出日志阈值时额外取行时间戳一并输出。
-	// created_at/updated_at 是「这行数据何时写入/修改」的最强线索，
-	// 配合操作时间线可定位写入方（API 调用 / 脚本 / 直连 SQL）。
+	// 可疑倍率日志（读路径-数据库行）：值与时间戳同一条 SQL 取出，无竞态——
+	// 即使写入方「写入后立刻删除」，抓到的瞬间也会留下真实时间戳。
 	if billingguard.ShouldLogMultiplier(v) {
-		var createdAt, updatedAt time.Time
-		if rows, qErr := r.sql.QueryContext(ctx,
-			`SELECT created_at, updated_at FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = $2`,
-			userID, groupID); qErr == nil {
-			if rows.Next() {
-				_ = rows.Scan(&createdAt, &updatedAt)
-			}
-			_ = rows.Close()
-		}
 		slog.Warn("billingguard: suspicious user group rate row in database",
 			"user_id", userID, "group_id", groupID,
 			"rate_multiplier", v,
