@@ -1107,6 +1107,10 @@ func (s *BatchImagePublicService) resolvePricingSnapshot(ctx context.Context, ow
 		AccountRateMultiplier: accountMultiplier,
 		TotalCost:             unit * float64(len(req.Items)),
 		ActualCost:            holdUnitPrice * float64(len(req.Items)),
+		ImageCount:            len(req.Items),
+		BillingModel:          req.Model,
+		InboundEndpoint:       "/v1/images/batches",
+		PricingAt:             time.Now().UTC().Format(time.RFC3339),
 	}); guardErr != nil {
 		return nil, guardErr
 	}

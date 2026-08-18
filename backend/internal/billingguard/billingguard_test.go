@@ -249,6 +249,35 @@ func TestValidateWriteAccountRateMultiplier(t *testing.T) {
 	require.Contains(t, err.Error(), "exceeds max 50.00")
 }
 
+func TestLogThrottle(t *testing.T) {
+	resetGuard(t)
+	ResetLogThrottle()
+
+	// 不节流（interval=0）：每次都放行
+	Configure(Config{Enabled: true, MaxRateMultiplier: 1000, MaxAccountRateMultiplier: 1000, LogIntervalSeconds: 0})
+	emit, suppressed := LogThrottle("k")
+	require.True(t, emit)
+	require.Zero(t, suppressed)
+	emit, _ = LogThrottle("k")
+	require.True(t, emit)
+
+	// 节流（interval=60）：同 key 第二次被抑制并计数
+	Configure(Config{Enabled: true, MaxRateMultiplier: 1000, MaxAccountRateMultiplier: 1000, LogIntervalSeconds: 60})
+	ResetLogThrottle()
+	emit, suppressed = LogThrottle("k")
+	require.True(t, emit)
+	require.Zero(t, suppressed)
+	emit, suppressed = LogThrottle("k")
+	require.False(t, emit)
+	require.Equal(t, int64(1), suppressed)
+	emit, suppressed = LogThrottle("k")
+	require.False(t, emit)
+	require.Equal(t, int64(2), suppressed)
+	// 不同 key 不受影响
+	emit, _ = LogThrottle("other")
+	require.True(t, emit)
+}
+
 func TestShouldLogMultiplier(t *testing.T) {
 	resetGuard(t)
 	Configure(Config{Enabled: true, MaxRateMultiplier: 1000, MaxAccountRateMultiplier: 1000, LogAboveMultiplier: 10})

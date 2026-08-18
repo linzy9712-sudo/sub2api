@@ -48,26 +48,40 @@
 建议上线顺序：先 `OBSERVE_ONLY=true` 观察告警频率，确认无误报后再切到拦截模式。
 ## 日志体系：倍率来源全链路可查（journald，非数据库）
 
-护栏的所有日志走 `slog`（应用统一 handler）输出到 stdout → systemd journal，
+护栏日志统一带 **`[BillingGuard]`** 标签前缀，输出到 stdout → systemd journal，
 查询方式：
 
     journalctl -u sub2api -f | grep -i billingguard
+    journalctl -u sub2api -f | grep '\[BillingGuard\]'   # 精确匹配标签
 
-三层日志覆盖（关键词统一前缀 `billingguard:`）：
+日志样例：
 
-| 层级 | 触发点 | 日志内容 | 关键词 |
+    2026-08-18T12:34:06+0800 WARN ... [BillingGuard] suspicious user group rate row in database
+      {"user_id":13, "group_id":5, "rate_multiplier":115380,
+       "row_created_at":"...", "row_updated_at":"...", "source":"db_row"}
+
+**只记录可疑事件，正常请求零日志**：
+
+- 倍率 <= 日志阈值（默认 10）：不打任何护栏日志；
+- 倍率 > 10 且 <= 1000：可疑 WARN（含完整取证字段），**按「路径:用户:分组」节流**——
+  默认每 60 秒最多 1 条，被抑制的条数记在下一条日志的 `suppressed_logs` 字段里；
+- 倍率 > 1000：拦截 ERROR（节流同上）；**每笔拦截仍写审计表 `billing_guard_logs`**，不丢事件。
+
+可调参数：`SUB2API_BILLING_GUARD_LOG_ABOVE_MULTIPLIER`（默认 10，<=0 关闭可疑日志）、
+`SUB2API_BILLING_GUARD_LOG_INTERVAL_SECONDS`（默认 60，<=0 不节流）。
+
+| 层级 | 触发点 | 关键字段 | 关键词 |
 | --- | --- | --- | --- |
 | 读路径 | 解析用户专属倍率（缓存命中 / DB 加载） | user_id / group_id / user_rate / group_default / source | `resolver cache hit`、`resolver db load` |
 | 读路径 | 读取 user_group_rate_multipliers 行 | 行值 + **row_created_at / row_updated_at**（写入时间线索） | `row in database` |
 | 写路径 | SyncUserGroupRates / SyncGroupRateMultipliers | 写入的 user_id / group_id / 值 | `write (` |
-| 计费路径 | 倍率 > 日志阈值但未达拦截阈值 | 来源拆解（group_default/user_rate/peak/account_rate...） | `elevated multiplier observed` |
+| 写路径 | 写入校验拒绝超限值 | field / value / limit | `rejected multiplier write` |
+| 计费路径 | 倍率 > 10 未达拦截 | 来源拆解 + tokens/模型链/端点/定价时刻等完整取证字段 | `elevated multiplier observed` |
 | 计费路径 | 达拦截阈值 | 同上 + 拦截原因 | `blocked abnormal billing record` |
 
-日志阈值独立于拦截阈值：`SUB2API_BILLING_GUARD_LOG_ABOVE_MULTIPLIER`（默认 **10**，
-`<=0` 关闭）。倍率只要 >10 就会在**解析和写入时**留痕，>1000 才会拦截。
-
-排查思路：拦截行里的 `row_updated_at`/`row_created_at` 对齐操作时间线（谁在操作、
-哪个脚本在跑），`source` 字段区分值来自缓存还是数据库。
+排查思路：日志里的 `row_updated_at` 对齐操作时间线（谁在操作、哪个脚本在跑），
+`source` 字段区分值来自缓存还是数据库；数据库侧另有触发器历史表
+`user_group_rate_multipliers_history` 记录每次写入的 session_user / client_addr。
 
 **写入侧校验**：分组倍率、用户专属倍率（批量/单个）、图片/视频独立倍率、高峰倍率、
 账号倍率的全部写入路径，与计费拦截共用同一阈值——超过上限的值会在落库前被拒绝，
@@ -75,7 +89,7 @@
 
 ## 拦截时的行为
 
-- 输出 `slog` ERROR 日志，关键词 `billingguard: blocked`，携带 `reason / path / request_id / model / user_id / api_key_id / account_id / rate_multiplier / account_rate_multiplier / total_cost / actual_cost` 字段；
+- 输出 `slog` ERROR 日志（标签 `[BillingGuard]`），携带 `reason / path / request_id / model / user_id / api_key_id / account_id / group_id / multiplier_breakdown / rate_multiplier / account_rate_multiplier / total_cost / actual_cost` 以及 tokens/模型链/端点/定价时刻等完整取证字段；
 - **写入拦截事件日志表 `billing_guard_logs`**（见下节），供复盘"是否拦截成功"；
 - 计数器 `billingguard.Stats()` 返回 (拦截次数, 观察告警次数)，可接入 ops 面板做斜率告警；
 - `RecordUsage` 返回 `billingguard.ErrBlocked` 哨兵错误（可用 `errors.Is` 识别），调用方仅记录日志。

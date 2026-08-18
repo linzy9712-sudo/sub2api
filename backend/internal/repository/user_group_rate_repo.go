@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -154,12 +155,20 @@ func (r *userGroupRateRepository) GetByUserAndGroup(ctx context.Context, userID,
 	v := rate.Float64
 	// 可疑倍率日志（读路径-数据库行）：值与时间戳同一条 SQL 取出，无竞态——
 	// 即使写入方「写入后立刻删除」，抓到的瞬间也会留下真实时间戳。
+	// 按 user:group 节流，可疑流量持续时不会刷爆日志。
 	if billingguard.ShouldLogMultiplier(v) {
-		slog.Warn("billingguard: suspicious user group rate row in database",
-			"user_id", userID, "group_id", groupID,
-			"rate_multiplier", v,
-			"row_created_at", createdAt, "row_updated_at", updatedAt,
-			"source", "db_row")
+		if emit, suppressed := billingguard.LogThrottle(fmt.Sprintf("dbrow:%d:%d", userID, groupID)); emit {
+			attrs := []any{
+				"user_id", userID, "group_id", groupID,
+				"rate_multiplier", v,
+				"row_created_at", createdAt, "row_updated_at", updatedAt,
+				"source", "db_row",
+			}
+			if suppressed > 0 {
+				attrs = append(attrs, "suppressed_logs", suppressed)
+			}
+			slog.Warn(billingguard.LogTag+"suspicious user group rate row in database", attrs...)
+		}
 	}
 	return &v, nil
 }
@@ -210,9 +219,13 @@ func (r *userGroupRateRepository) SyncUserGroupRates(ctx context.Context, userID
 		} else {
 			// 可疑倍率日志（写路径）：值超出日志阈值即输出，记录写入方上下文。
 			if billingguard.ShouldLogMultiplier(*rate) {
-				slog.Warn("billingguard: suspicious user group rate write (SyncUserGroupRates)",
-					"user_id", userID, "group_id", groupID, "rate_multiplier", *rate,
-					"source", "write_api")
+				if emit, suppressed := billingguard.LogThrottle(fmt.Sprintf("write:%d:%d", userID, groupID)); emit {
+					attrs := []any{"user_id", userID, "group_id", groupID, "rate_multiplier", *rate, "source", "write_api"}
+					if suppressed > 0 {
+						attrs = append(attrs, "suppressed_logs", suppressed)
+					}
+					slog.Warn(billingguard.LogTag+"suspicious user group rate write (SyncUserGroupRates)", attrs...)
+				}
 			}
 			upsertGroupIDs = append(upsertGroupIDs, groupID)
 			upsertRates = append(upsertRates, *rate)
@@ -304,9 +317,13 @@ func (r *userGroupRateRepository) SyncGroupRateMultipliers(ctx context.Context, 
 	for i, e := range entries {
 		// 可疑倍率日志（写路径）：值超出日志阈值即输出，记录写入方上下文。
 		if billingguard.ShouldLogMultiplier(e.RateMultiplier) {
-			slog.Warn("billingguard: suspicious user group rate write (SyncGroupRateMultipliers)",
-				"user_id", e.UserID, "group_id", groupID, "rate_multiplier", e.RateMultiplier,
-				"source", "write_api")
+			if emit, suppressed := billingguard.LogThrottle(fmt.Sprintf("write:%d:%d", e.UserID, groupID)); emit {
+				attrs := []any{"user_id", e.UserID, "group_id", groupID, "rate_multiplier", e.RateMultiplier, "source", "write_api"}
+				if suppressed > 0 {
+					attrs = append(attrs, "suppressed_logs", suppressed)
+				}
+				slog.Warn(billingguard.LogTag+"suspicious user group rate write (SyncGroupRateMultipliers)", attrs...)
+			}
 		}
 		userIDs[i] = e.UserID
 		rates[i] = e.RateMultiplier

@@ -312,6 +312,12 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if cost != nil {
 		totalCost, actualCost = cost.TotalCost, cost.ActualCost
 	}
+
+	// 计费取证字段：只随可疑/拦截日志输出（正常请求零日志），供 journald 独立复盘。
+	guardReasoningEffort := ""
+	if result.ReasoningEffort != nil {
+		guardReasoningEffort = *result.ReasoningEffort
+	}
 	if guardErr := billingguard.CheckAndBlock(billingguard.Event{
 		Path:                  "openai",
 		RequestID:             result.RequestID,
@@ -325,6 +331,21 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		AccountRateMultiplier: accountRateMultiplier,
 		TotalCost:             totalCost,
 		ActualCost:            actualCost,
+		InputTokens:           result.Usage.InputTokens,
+		OutputTokens:          result.Usage.OutputTokens,
+		CacheCreationTokens:   result.Usage.CacheCreationInputTokens,
+		CacheReadTokens:       result.Usage.CacheReadInputTokens,
+		ImageCount:            result.ImageCount,
+		SearchCount:           result.SearchCount + result.WebSearchCalls,
+		VideoCount:            result.VideoCount,
+		UpstreamModel:         result.UpstreamModel,
+		BillingModel:          firstUsageBillingModel(billingModels),
+		ServiceTier:           serviceTier,
+		ReasoningEffort:       guardReasoningEffort,
+		InboundEndpoint:       input.InboundEndpoint,
+		UpstreamEndpoint:      input.UpstreamEndpoint,
+		PricingAt:             openAIUsagePricingAt(input).Format(time.RFC3339),
+		Stream:                result.Stream,
 	}); guardErr != nil {
 		return guardErr
 	}
