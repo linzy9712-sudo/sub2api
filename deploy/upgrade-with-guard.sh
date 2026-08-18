@@ -147,8 +147,15 @@ chown --reference="\$BIN_DIR/sub2api" "\$BIN_DIR/sub2api.new" 2>/dev/null || tru
 chmod --reference="\$BIN_DIR/sub2api" "\$BIN_DIR/sub2api.new"
 mv "\$BIN_DIR/sub2api.new" "\$BIN_DIR/sub2api"
 systemctl restart "\$SERVICE"
-sleep 5
-if ! systemctl is-active --quiet "\$SERVICE"; then
+RESTART_OK=0
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  sleep 2
+  if systemctl is-active --quiet "\$SERVICE"; then
+    RESTART_OK=1
+    break
+  fi
+done
+if [ "\$RESTART_OK" != "1" ]; then
   LATEST="\$(ls -1t "\$BIN_DIR"/sub2api.bak-* 2>/dev/null | head -1)"
   if [ -n "\$LATEST" ]; then
     cp -a "\$LATEST" "\$BIN_DIR/sub2api"
@@ -187,8 +194,15 @@ else
 
   echo "==> 重启 $SERVICE"
   systemctl restart "$SERVICE"
-  sleep 5
-  if systemctl is-active --quiet "$SERVICE"; then
+  RESTART_OK=0
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    sleep 2
+    if systemctl is-active --quiet "$SERVICE"; then
+      RESTART_OK=1
+      break
+    fi
+  done
+  if [ "$RESTART_OK" = "1" ]; then
     echo "升级成功: $STAMP"
     echo "备份文件: $BACKUP（确认稳定后可删除）"
     ls -1t "$BIN_DIR"/sub2api.bak-* 2>/dev/null | tail -n +3 | xargs -r rm -f
