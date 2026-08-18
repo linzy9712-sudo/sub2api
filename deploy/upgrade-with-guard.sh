@@ -27,6 +27,14 @@ BUILD_TAGS=${BUILD_TAGS:-embed}           # embed=带管理界面; none=纯 API
 VERSION_SUFFIX=${VERSION_SUFFIX:-guard}   # 版本戳后缀，如 0.1.180-guard.1
 GO=${GO:-go}
 
+# —— 构建产物清理 ——
+#   每次构建产生的本地临时二进制在部署后自动删除；
+#   Go 构建缓存/模块缓存默认保留（下次升级构建快很多），磁盘紧张时可手动：
+#     CLEAN_GO_BUILD_CACHE=1  部署成功后执行 go clean -cache  （本机约 2.9G）
+#     CLEAN_GO_MODCACHE=1     部署成功后执行 go clean -modcache（本机约 1.1G，下次需重新下载依赖）
+CLEAN_GO_BUILD_CACHE=${CLEAN_GO_BUILD_CACHE:-0}
+CLEAN_GO_MODCACHE=${CLEAN_GO_MODCACHE:-0}
+
 # —— 远程部署配置（模式 A；不设 DEPLOY_HOST 则走本地模式 B）——
 DEPLOY_HOST=${DEPLOY_HOST:-}              # 如 root@38.244.20.147
 DEPLOY_SSH_KEY=${DEPLOY_SSH_KEY:-$HOME/.ssh/id_ed25519}
@@ -125,6 +133,8 @@ if [ -n "$DEPLOY_HOST" ]; then
   # —— 模式 A：远程部署 ——
   echo "==> 上传到 $DEPLOY_HOST:/tmp/sub2api-new"
   $SCP_CMD "$BUILD_OUT" "$DEPLOY_HOST:/tmp/sub2api-new"
+  # 本机临时构建产物清理（~113M/次）：上传完成即删，部署失败重跑会重新构建
+  rm -f "$BUILD_OUT"
 
   echo "==> 远端备份 + 原子替换 + 重启"
   $SSH_CMD bash -s <<REMOTE
@@ -155,6 +165,14 @@ REMOTE
   echo "==> 远端验证"
   $SSH_CMD "\"$REMOTE_BIN_DIR/sub2api\" -version" || true
   $SSH_CMD "journalctl -u $REMOTE_SERVICE -n 60 | grep -i BillingGuard | tail -2" || true
+  if [ "$CLEAN_GO_BUILD_CACHE" = "1" ]; then
+    echo "==> 清理 Go 构建缓存 (go clean -cache)"
+    "$GO" clean -cache
+  fi
+  if [ "$CLEAN_GO_MODCACHE" = "1" ]; then
+    echo "==> 清理 Go 模块缓存 (go clean -modcache)"
+    "$GO" clean -modcache
+  fi
   echo "升级部署完成: $STAMP"
 else
   # —— 模式 B：本机（服务器上）自构建自部署 ——
@@ -174,6 +192,14 @@ else
     echo "升级成功: $STAMP"
     echo "备份文件: $BACKUP（确认稳定后可删除）"
     ls -1t "$BIN_DIR"/sub2api.bak-* 2>/dev/null | tail -n +3 | xargs -r rm -f
+    if [ "$CLEAN_GO_BUILD_CACHE" = "1" ]; then
+      echo "==> 清理 Go 构建缓存 (go clean -cache)"
+      "$GO" clean -cache
+    fi
+    if [ "$CLEAN_GO_MODCACHE" = "1" ]; then
+      echo "==> 清理 Go 模块缓存 (go clean -modcache)"
+      "$GO" clean -modcache
+    fi
   else
     echo "启动失败，回滚到备份..." >&2
     cp -a "$BACKUP" "$BIN_DIR/sub2api"
