@@ -2,9 +2,12 @@
 --
 -- 目的：抓住「写入→立刻删除」这类瞬态写入与绕过应用的直连 SQL。
 --   - 每次 INSERT / UPDATE / DELETE 自动追加一行（含级联删除，如删用户/删分组连带清行）；
---   - 记录新旧值、操作类型、数据库会话用户（session_user）、应用名（application_name）
---     与客户端来源 IP（inet_client_addr），直接定位写入方；
+--   - 记录新旧值、操作类型、数据库会话用户（db_user）、应用名（application_name）
+--     与客户端来源 IP（client_addr），直接定位写入方；
 --   - 只增不删（append-only），行被删后审计依然在。
+--
+-- 注意：SESSION_USER 是 PostgreSQL 保留字，不能用作列名（曾因此导致本迁移语法错误）；
+-- 列名使用 db_user，函数体内仍可调用 SESSION_USER 函数取值。
 CREATE TABLE IF NOT EXISTS user_group_rate_multipliers_history (
     id BIGSERIAL PRIMARY KEY,
     changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -13,7 +16,7 @@ CREATE TABLE IF NOT EXISTS user_group_rate_multipliers_history (
     group_id BIGINT,
     old_rate_multiplier DECIMAL(10,4),
     new_rate_multiplier DECIMAL(10,4),
-    session_user TEXT,
+    db_user TEXT,
     application_name TEXT,
     client_addr TEXT
 );
@@ -27,11 +30,11 @@ CREATE OR REPLACE FUNCTION audit_user_group_rate_multipliers() RETURNS trigger A
 BEGIN
     INSERT INTO user_group_rate_multipliers_history
         (operation, user_id, group_id, old_rate_multiplier, new_rate_multiplier,
-         session_user, application_name, client_addr)
+         db_user, application_name, client_addr)
     VALUES
         (TG_OP,
-         COALESCE(NEW.user_id, OLD.user_id),
-         COALESCE(NEW.group_id, OLD.group_id),
+         CASE WHEN TG_OP <> 'DELETE' THEN NEW.user_id ELSE OLD.user_id END,
+         CASE WHEN TG_OP <> 'DELETE' THEN NEW.group_id ELSE OLD.group_id END,
          CASE WHEN TG_OP IN ('UPDATE','DELETE') THEN OLD.rate_multiplier END,
          CASE WHEN TG_OP IN ('INSERT','UPDATE') THEN NEW.rate_multiplier END,
          SESSION_USER,
