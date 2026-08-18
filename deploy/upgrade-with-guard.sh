@@ -161,6 +161,10 @@ if [ "\$RESTART_OK" != "1" ]; then
     cp -a "\$LATEST" "\$BIN_DIR/sub2api"
     systemctl restart "\$SERVICE"
   fi
+  # 失败路径同样清理：只保留最近 2 个备份（含刚用于回滚的那个），
+  # 失败的二进制与 /tmp 文件均不留存。
+  ls -1t "\$BIN_DIR"/sub2api.bak-* 2>/dev/null | tail -n +3 | xargs -r rm -f
+  rm -f "\$BIN_DIR"/sub2api.new /tmp/sub2api-new
   echo "REMOTE_RESTART_FAILED"
   exit 1
 fi
@@ -218,6 +222,9 @@ else
     echo "启动失败，回滚到备份..." >&2
     cp -a "$BACKUP" "$BIN_DIR/sub2api"
     systemctl restart "$SERVICE"
+    # 失败路径同样清理：只保留最近 2 个备份，不留失败产物
+    ls -1t "$BIN_DIR"/sub2api.bak-* 2>/dev/null | tail -n +3 | xargs -r rm -f
+    rm -f "$BIN_DIR"/sub2api.new
     echo "已回滚，请检查: journalctl -u $SERVICE -n 100" >&2
     exit 1
   fi
